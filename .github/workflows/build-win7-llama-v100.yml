@@ -23,7 +23,7 @@ jobs:
       fail-fast: false
       matrix:
         variant: [cpu, cuda]   # cpu = 纯CPU保底；cuda = P2200 sm_61 GPU版
-    timeout-minutes: 90
+    timeout-minutes: 180   # 降并行度后 CUDA 全量编译更久，放宽上限
 
     steps:
       # ---------- 0. 检出本仓库（含补丁/门禁脚本） ----------
@@ -160,7 +160,12 @@ jobs:
             -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON `
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
           if ($LASTEXITCODE -ne 0) { throw "cmake configure (cuda) failed" }
-          cmake --build build-cuda --parallel 8 --target llama-server llama-cli
+          # GitHub 免费 windows runner 仅 7GB RAM；fattn 的 FP8/量化模板单实例
+          # 可超 1GB，--parallel 8 会 OOM 导致 "subcommand failed" 且无明确 error。
+          # 降到 2 并行（约等于 runner 核数），牺牲编译时间换稳定。
+          Write-Host "=== Free RAM (MB) before CUDA build ==="
+          (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory
+          cmake --build build-cuda --parallel 2 --target llama-server llama-cli
           if ($LASTEXITCODE -ne 0) { throw "cmake build (cuda) failed" }
 
       # ---------- 5. 发版门禁 ----------
