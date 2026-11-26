@@ -1,0 +1,165 @@
+name: Build Win7-compatible llama.cpp v1.0.0 (LFM3/Qwen3.8 - P2200)
+
+# 线路C：v1.0.0 引擎（首个稳定版），支持 LFM3 / Qwen3.8 原生 MTP / FP8 KV
+# 免费构建机：GitHub Actions windows-2022 runner
+# 门禁：import-audit.ps1 检查 Win8+ API 导入，FAIL 则 artifact 带 -AUDIT_FAIL 标签
+#
+# v1.0.0 相对 v0.8.0 的关键差异（已按 v1.0.0 源码原文核对）：
+#   - ggml-cpu.c 的 SetThreadInformation 已自带 #if _WIN32_WINNT >= 0x0602 保护，无需补丁
+#   - httplib 升级到 0.66.0，三个 Win8+ API 仍在，补丁锚点行号变 1707/1721/1735
+#   - 新增 LLAMA_OPENSSL=ON 默认 -> 显式关闭，减少 Win8+ API 导入风险（离线内网无需 HTTPS）
+#   - CMake 最低 3.14...3.28；CUDA 后端 3.18；runner 预装 3.31 满足
+#   - CUDA 11.4.3 + sm_61(61-virtual) 官方支持，P2200 可用
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [cpu, cuda]   # cpu = 纯CPU保底；cuda = P2200 sm_61 GPU版
+    timeout-minutes: 90
+
+    steps:
+      # ---------- 0. 检出本仓库（含补丁/门禁脚本） ----------
+      - name: Checkout build scripts
+        uses: actions/checkout@v4
+
+      # ---------- 1. 装 VS2019 BuildTools + 新版 CMake ----------
+      - name: Install VS2019 BuildTools (v142 C++ workload)
+        shell: pwsh
+        run: |
+          choco install visualstudio2019buildtools `
+            --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --norestart" `
+            -y --no-progress --limit-output
+          Write-Host "VS2019 BuildTools installed."
+
+      - name: Setup VS2019 x64 developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          vsversion: '2019'
+          arch: x64
+
+      - name: Show CMake version
+        shell: pwsh
+        run: cmake --version   # 需 >= 3.18；runner 预装 3.31 OK
+
+      # ---------- 2. 装 CUDA 11.4.3（仅 cuda job） ----------
+      - name: Install CUDA 11.4.3 (CUDA job only)
+        if: matrix.variant == 'cuda'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $url = "https://developer.download.nvidia.com/compute/cuda/11.4.3/network_installers/cuda_11.4.3_win10_network.exe"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\cuda1143.exe" -UseBasicParsing
+          $p = Start-Process -FilePath "$env:RUNNER_TEMP\cuda1143.exe" `
+               -ArgumentList '-s','nvcc_11.4','cudart_11.4','cublas_11.4','cublas_dev_11.4','visual_studio_integration_11.4' `
+               -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "CUDA 11.4.3 install failed, exit=$($p.ExitCode)" }
+          $cudaBin = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.4\bin"
+          "$cudaBin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.4" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & "$cudaBin\nvcc.exe" -V
+
+      # ---------- 3. 拉 llama.cpp v1.0.0 并打 Win7 补丁 ----------
+      - name: Clone llama.cpp v1.0.0
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch v1.0.0 https://github.com/ggml-org/llama.cpp.git llama.cpp-1.0.0
+          if ($LASTEXITCODE -ne 0) { throw "git clone llama.cpp v1.0.0 failed" }
+
+      - name: Apply Win7 compat patch (v1.0.0, with self-check)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git -C llama.cpp-1.0.0 apply --check ..\win7-compat-v100.patch
+          if ($LASTEXITCODE -ne 0) {
+            throw "PATCH CHECK FAILED: win7-compat-v100.patch does not apply to v1.0.0. See README."
+          }
+          git -C llama.cpp-1.0.0 apply ..\win7-compat-v100.patch
+          # 校验三个 API 替换标记都注入
+          $c = Select-String -Path "llama.cpp-1.0.0\vendor\cpp-httplib\httplib.cpp" -Pattern "Win7 compat" -Quiet
+          $h = Select-String -Path "llama.cpp-1.0.0\vendor\cpp-httplib\httplib.h" -Pattern "#if 0 && defined(_WIN32_WINNT)" -Quiet
+          if (-not ($c -and $h)) { throw "Win7 patch markers not found after apply." }
+          Write-Host "Win7 v1.0.0 patch applied and verified."
+          Write-Host "NOTE: ggml-cpu.c needs no patch in v1.0.0 - SetThreadInformation is already guarded by #if _WIN32_WINNT >= 0x0602."
+
+      # ---------- 4. CMake 配置 + 编译 ----------
+      # v1.0.0 选项：GGML_NATIVE/GGML_OPENMP_ENABLED/BUILD_SHARED_LIBS 均有效；
+      # LLAMA_CURL 已废弃（不传）；额外关 LLAMA_OPENSSL 减 Win8+ 导入风险。
+      - name: Configure & build (CPU)
+        if: matrix.variant == 'cpu'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmake -S llama.cpp-1.0.0 -B build-cpu -C win7-cache.cmake -G "Visual Studio 16 2019" -A x64 `
+            -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DGGML_OPENMP_ENABLED=OFF `
+            -DLLAMA_OPENSSL=OFF -DLLAMA_CURL=OFF `
+            -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF `
+            -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          if ($LASTEXITCODE -ne 0) { throw "cmake configure (cpu) failed" }
+          cmake --build build-cpu --config Release --parallel 8 --target llama-server llama-cli
+          if ($LASTEXITCODE -ne 0) { throw "cmake build (cpu) failed" }
+
+      - name: Configure & build (CUDA, sm_61 for P2200)
+        if: matrix.variant == 'cuda'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cudaBin = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.4\bin"
+          $env:PATH = "$cudaBin;$env:PATH"
+          cmake -S llama.cpp-1.0.0 -B build-cuda -C win7-cache.cmake -G "Visual Studio 16 2019" -A x64 `
+            -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=61 `
+            -DCMAKE_CUDA_FLAGS="-allow-unsupported-compiler" `
+            -DCUDAToolkit_ROOT="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.4" `
+            -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DGGML_OPENMP_ENABLED=OFF `
+            -DLLAMA_OPENSSL=OFF -DLLAMA_CURL=OFF `
+            -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF `
+            -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          if ($LASTEXITCODE -ne 0) { throw "cmake configure (cuda) failed" }
+          cmake --build build-cuda --config Release --parallel 8 --target llama-server llama-cli
+          if ($LASTEXITCODE -ne 0) { throw "cmake build (cuda) failed" }
+
+      # ---------- 5. 发版门禁 ----------
+      - name: Win7 compatibility gate (import-audit.ps1)
+        shell: pwsh
+        id: audit
+        continue-on-error: true
+        run: |
+          $exe = if ('${{ matrix.variant }}' -eq 'cuda') { 'build-cuda\bin\Release\llama-server.exe' } else { 'build-cpu\bin\Release\llama-server.exe' }
+          . .\import-audit.ps1 -Path $exe
+
+      # ---------- 6. 打包 ----------
+      - name: Stage deployables
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = if ('${{ matrix.variant }}' -eq 'cuda') { 'build-cuda\bin\Release' } else { 'build-cpu\bin\Release' }
+          New-Item -ItemType Directory -Force -Path deploy | Out-Null
+          Copy-Item "$src\llama-server.exe" deploy\
+          Copy-Item "$src\llama-cli.exe" deploy\
+          if ('${{ matrix.variant }}' -eq 'cuda') {
+            $cudaBin = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.4\bin"
+            foreach ($dll in @('cudart64_110.dll','cublas64_11.dll','cublasLt64_11.dll')) {
+              if (Test-Path "$cudaBin\$dll") { Copy-Item "$cudaBin\$dll" deploy\ }
+              else { Write-Warning "Missing CUDA DLL: $dll" }
+            }
+          }
+          $audit = if ('${{ steps.audit.outcome }}' -eq 'success') { 'PASS' } else { 'AUDIT_FAIL' }
+          "audit=$audit" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Get-ChildItem deploy | Format-Table Name,Length
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-v100-win7-${{ matrix.variant }}-${{ env.audit }}
+          path: deploy\*
+          if-no-files-found: error
+          retention-days: 90
