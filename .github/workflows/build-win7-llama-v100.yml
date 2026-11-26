@@ -83,9 +83,16 @@ jobs:
           }
           git -C llama.cpp-1.0.0 apply ..\win7-compat-v100.patch
           # 校验三个 API 替换标记都注入
-          $c = Select-String -Path "llama.cpp-1.0.0\vendor\cpp-httplib\httplib.cpp" -Pattern "Win7 compat" -Quiet
-          $h = Select-String -Path "llama.cpp-1.0.0\vendor\cpp-httplib\httplib.h" -Pattern "#if 0 && defined(_WIN32_WINNT)" -Quiet
-          if (-not ($c -and $h)) { throw "Win7 patch markers not found after apply." }
+          # -SimpleMatch 必须加：#if 0 && defined(_WIN32_WINNT) 含括号，
+          # 正则模式下 () 被当捕获组，永远匹配不到字面文本，会误报补丁失败。
+          $c = Select-String -Path "llama.cpp-1.0.0\vendor\cpp-httplib\httplib.cpp" -Pattern "Win7 compat" -SimpleMatch -Quiet
+          $h = Select-String -Path "llama.cpp-1.0.0\vendor\cpp-httplib\httplib.h" -Pattern "#if 0 && defined(_WIN32_WINNT)" -SimpleMatch -Quiet
+          if (-not ($c -and $h)) {
+            Write-Host "DIAG cpp-marker=$c h-marker=$h"
+            Write-Host "DIAG httplib.h _WIN32_WINNT lines:"
+            Select-String -Path "llama.cpp-1.0.0\vendor\cpp-httplib\httplib.h" -Pattern "_WIN32_WINNT" -SimpleMatch | Select-Object -First 6
+            throw "Win7 patch markers not found after apply."
+          }
           Write-Host "Win7 v1.0.0 patch applied and verified."
           Write-Host "NOTE: ggml-cpu.c needs no patch in v1.0.0 - SetThreadInformation is already guarded by #if _WIN32_WINNT >= 0x0602."
 
