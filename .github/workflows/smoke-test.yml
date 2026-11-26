@@ -95,16 +95,16 @@ jobs:
           Write-Host "=== CPU llama-server.exe --version ==="
           & $cpu --version
           if ($LASTEXITCODE -ne 0) { throw "CPU exe --version failed (loader/CRT issue?)" }
-          # CUDA 版：--version 仅作诊断，不作为门禁；无 GPU 时失败属预期。
-          # 用 Continue 避免 NativeCommandError 在 Stop 模式下中断脚本。
-          Write-Host "=== CUDA exe --version (diagnostic only, runner has no GPU) ==="
-          $oldEap = $ErrorActionPreference
-          $ErrorActionPreference = 'Continue'
-          & $gpu --version 2>&1 | ForEach-Object { Write-Host "  $_" }
-          $code = $LASTEXITCODE
-          $ErrorActionPreference = $oldEap
-          Write-Host "CUDA --version exit=$code (ignored: no GPU/driver on runner)"
+          # CUDA 版：绝不在无 GPU runner 上执行 --version。
+          # 根因：cudart64_110.dll 启动时会 LoadLibrary 驱动的 nvcuda.dll，runner 无
+          # NVIDIA 驱动 -> STATUS_DLL_NOT_FOUND (0xC0000135/-1073741515)；更隐蔽的是
+          # 该非零退出码会残留在 $LASTEXITCODE，令 pwsh 进程整体退出 1（即便脚本
+          # 已执行到末尾）。故 CUDA 版只做静态验证（文件大小 + 下一步 dumpbin 导入表）。
+          Write-Host "CUDA exe: static check only (no execution; runner has no GPU/driver)"
           Write-Host "EXE_PRESENCE_OK"
+          # 显式归零：PowerShell 脚本的进程退出码取自最后一条原生命令的 $LASTEXITCODE，
+          # 上面的 CPU --version 成功(0)，这里再兜底确保 step 不被残留值污染。
+          $global:LASTEXITCODE = 0
 
       # ---------- 2. CUDA DLL 依赖链（静态验证，不执行 GPU 代码） ----------
       - name: Verify CUDA runtime DLLs & import table (GPU variant)
@@ -145,6 +145,8 @@ jobs:
           }
           # 关键判据：DLL 齐全 + PE 导入表解析成功 = 拷到 Win7 有驱动时不会缺 DLL。
           Write-Host "CUDA_DLLS_OK"
+          # dumpbin 是原生命令，显式归零避免其退出码残留污染 step。
+          $global:LASTEXITCODE = 0
 
       # ---------- 3. 下载小模型 ----------
       - name: Download tiny test model (~400MB, link check only)
