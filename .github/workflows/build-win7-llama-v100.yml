@@ -155,7 +155,6 @@ jobs:
             -DCMAKE_C_COMPILER=cl.exe -DCMAKE_CXX_COMPILER=cl.exe `
             -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=61 `
             -DCMAKE_CUDA_COMPILER="$cudaBin\nvcc.exe" `
-            -DCMAKE_CUDA_FLAGS="-allow-unsupported-compiler" `
             -DCUDAToolkit_ROOT="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.4" `
             -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DGGML_OPENMP_ENABLED=OFF `
             -DLLAMA_OPENSSL=OFF -DLLAMA_CURL=OFF `

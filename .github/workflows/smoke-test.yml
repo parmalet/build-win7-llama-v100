@@ -130,16 +130,27 @@ jobs:
           if ($dumpbin) {
             Write-Host "=== CUDA exe import dependencies (dumpbin: $dumpbin) ==="
             $deps = & $dumpbin /dependents ".\artifacts\cuda\llama-server.exe" 2>&1
-            $deps | Select-String -Pattern "cudart|cublas|cudnn|cufft|curand|nvrtc" | ForEach-Object { Write-Host "  $_" }
-            $refs = @()
+            $deps | ForEach-Object { Write-Host "  $_" }
+            # 只把「trim 后是纯 DLL 文件名」的行当作导入项，避开 dumpbin 头部/路径行。
+            # 旧脚本用宽松子串正则，会把 cuda.dll 一起抓进来又要求打包 -> 误报。
+            $imported = @()
             foreach ($line in $deps) {
-              if ($line -match "((?:cuda|cublas|cudart|cudnn|cufft|curand|nvrtc)[\w]*\.dll)") { $refs += $Matches[1].ToLower() }
+              $t = $line.ToString().Trim()
+              if ($t -match '^([A-Za-z0-9_]+\.dll)$') { $imported += $Matches[1].ToLower() }
             }
-            if ($refs.Count -eq 0) { throw "dumpbin found no CUDA DLL imports in CUDA exe - wrong binary?" }
-            foreach ($d in ($refs | Sort-Object -Unique)) {
-              if (-not (Test-Path ".\artifacts\cuda\$d")) { throw "CUDA import '$d' missing from artifact - would fail on Win7" }
+            Write-Host "All PE imports: $($imported -join ', ')"
+            # 需要随 exe 分发的 CUDA runtime DLL（cudart/cublas/cudnn/cufft/curand/nvrtc 系列）
+            $packaged = @($imported | Where-Object { $_ -match '^(cudart|cublas|cudnn|cufft|curand|nvrtc)' })
+            if ($packaged.Count -eq 0) { throw "dumpbin found no packaged CUDA runtime DLL imports - wrong binary?" }
+            foreach ($d in ($packaged | Sort-Object -Unique)) {
+              if (-not (Test-Path ".\artifacts\cuda\$d")) { throw "CUDA runtime import '$d' missing from artifact - would fail on Win7" }
             }
-            Write-Host "CUDA imports resolved: $($refs -join ', ')"
+            # 驱动/系统提供的 DLL（cuda.dll、nvcuda.dll 等）本就不随程序打包，仅提示不判失败。
+            $driverProvided = @($imported | Where-Object { $_ -match '^(cuda|nvcuda)\.dll$' })
+            if ($driverProvided.Count -gt 0) {
+              Write-Host "Driver-provided CUDA DLLs (from NVIDIA driver, not packaged): $($driverProvided -join ', ')"
+            }
+            Write-Host "CUDA imports resolved: packaged=[$($packaged -join ', ')]"
           } else {
             Write-Warning "dumpbin not found; DLL presence check passed but import-table check skipped."
           }
