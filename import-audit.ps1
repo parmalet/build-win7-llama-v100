@@ -29,9 +29,9 @@ $blacklist = @(
   "GetSystemTimePreciseAsFileTime",
   "WaitOnAddress", "WakeByAddressAll", "WakeByAddressSingle",
   "SetDefaultDllDirectories", "SetThreadGroupAffinityEx",
-  "CreateFile2", "CreateFileMapping2",
+  "CreateFile2", "CreateFile2FromApp", "CreateFileMapping2", "CreateFileMappingFromApp",
   "PrefetchVirtualMemory",
-  "MapViewOfFile3", "VirtualAlloc2", "VirtualAlloc2FromApp",
+  "MapViewOfFile3", "MapViewOfFileFromApp", "VirtualAlloc2", "VirtualAlloc2FromApp",
   "GetOverlappedResultEx",
   "GetCurrentThreadStackLimits", "SetProcessMitigationPolicy",
   "SetThreadSelectedCpuSets", "GetThreadSelectedCpuSets",
@@ -45,11 +45,16 @@ $blacklist = @(
 $blRegex = ($blacklist | ForEach-Object { [regex]::Escape($_) }) -join "|"
 
 # Known-good import DLLs for a Win7-clean binary (system + our runtime deps)
+# CUDA runtime DLLs are shipped with our artifact; cuda.dll/nvcuda.dll come from
+# the NVIDIA driver. All are legitimate and must not be flagged as unknown.
 $okDlls = @("kernel32.dll","user32.dll","shell32.dll","advapi32.dll","ws2_32.dll",
             "ole32.dll","oleaut32.dll","gdi32.dll","comdlg32.dll","shlwapi.dll",
             "msvcrt.dll","ntdll.dll","iphlpapi.dll","userenv.dll","dbghelp.dll",
             "version.dll","winmm.dll","psapi.dll","crypt32.dll","bcrypt.dll",
-            "secur32.dll","netapi32.dll","setupapi.dll","wintrust.dll")
+            "secur32.dll","netapi32.dll","setupapi.dll","wintrust.dll",
+            "ucrtbase.dll",
+            "cudart64_110.dll","cublas64_11.dll","cublasLt64_11.dll",
+            "cuda.dll","nvcuda.dll")
 
 function Find-Dumpbin {
   param([string]$Override)
