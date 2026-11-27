@@ -1,7 +1,10 @@
-name: Build Win7-compatible llama.cpp v1.0.0 (LFM3/Qwen3.8 - P2200)
+name: Build Win7-compatible llama.cpp v1.0.0 (LFM3/Qwen3.8 - E5640+P2200)
 
 # 线路C：v1.0.0 引擎（首个稳定版），支持 LFM3 / Qwen3.8 原生 MTP / FP8 KV
 # 免费构建机：GitHub Actions windows-2022 runner
+# CPU 基线：SSE4.2 only（运行机 E5640=Westmere 无 AVX），由 win7-cache.cmake 集中锁定
+#   ⚠ v1.0.0 陷阱：-DGGML_NATIVE=OFF 会让 AVX/AVX2/BMI2/SSE42 默认全 ON，
+#   必须靠 win7-cache.cmake 显式逐个关，且 configure 后有校验步骤防静默失效。
 # 门禁：import-audit.ps1 检查 Win8+ API 导入，FAIL 则 artifact 带 -AUDIT_FAIL 标签
 #
 # v1.0.0 相对 v0.8.0 的关键差异（已按 v1.0.0 源码原文核对）：
@@ -139,6 +142,12 @@ jobs:
             -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_BUILD_UI=OFF `
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
           if ($LASTEXITCODE -ne 0) { throw "cmake configure (cpu) failed" }
+          # E5640 (Westmere) 无 AVX：确认 SSE4.2 基线生效，任何 AVX 系列残留都会 0xc000001d
+          $cache = Get-Content build-cpu\CMakeCache.txt -Raw
+          foreach ($need in @("GGML_SSE42:BOOL=ON","GGML_AVX:BOOL=OFF","GGML_AVX2:BOOL=OFF","GGML_BMI2:BOOL=OFF","GGML_NATIVE:BOOL=OFF")) {
+            if (-not $cache.Contains($need)) { throw "CPU SIMD baseline NOT applied: missing '$need'. E5640 would crash 0xc000001d." }
+          }
+          Write-Host "CPU SIMD baseline OK: SSE4.2 only (E5640-safe)."
           cmake --build build-cpu --config Release --parallel 8 --target llama-server llama-cli
           if ($LASTEXITCODE -ne 0) { throw "cmake build (cpu) failed" }
 
@@ -163,6 +172,12 @@ jobs:
             -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_BUILD_UI=OFF `
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
           if ($LASTEXITCODE -ne 0) { throw "cmake configure (cuda) failed" }
+          # E5640 (Westmere) 无 AVX：CUDA 版的 CPU 侧同样必须锁 SSE4.2
+          $cache = Get-Content build-cuda\CMakeCache.txt -Raw
+          foreach ($need in @("GGML_SSE42:BOOL=ON","GGML_AVX:BOOL=OFF","GGML_AVX2:BOOL=OFF","GGML_BMI2:BOOL=OFF","GGML_NATIVE:BOOL=OFF")) {
+            if (-not $cache.Contains($need)) { throw "CUDA SIMD baseline NOT applied: missing '$need'. E5640 would crash 0xc000001d." }
+          }
+          Write-Host "CUDA SIMD baseline OK: SSE4.2 only (E5640-safe), sm_61 GPU path unaffected."
           # GitHub 免费 windows runner 仅 7GB RAM；fattn 的 FP8/量化模板单实例
           # 可超 1GB，--parallel 8 会 OOM 导致 "subcommand failed" 且无明确 error。
           # 降到 2 并行（约等于 runner 核数），牺牲编译时间换稳定。
