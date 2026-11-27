@@ -160,7 +160,10 @@ jobs:
           $env:PATH = "$cudaBin;$env:PATH"
           # 用 Ninja 绕开 VS 的 CUDA MSBuild 集成（"No CUDA toolset found" 根因）。
           # 需 cl.exe 在 PATH（msvc-dev-cmd 已设）+ nvcc 在 PATH（上一步 GITHUB_PATH）。
+          # -DCMAKE_BUILD_TYPE=Release 必须显式给：Ninja 单配置下不设会落 Debug
+          # （/Od /RTC1），产物性能差数倍。
           cmake -S llama.cpp-1.0.0 -B build-cuda -C win7-cache.cmake -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_C_COMPILER=cl.exe -DCMAKE_CXX_COMPILER=cl.exe `
             -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=61 `
             -DCMAKE_CUDA_COMPILER="$cudaBin\nvcc.exe" `
@@ -177,7 +180,8 @@ jobs:
           foreach ($need in @("GGML_SSE42:BOOL=ON","GGML_AVX:BOOL=OFF","GGML_AVX2:BOOL=OFF","GGML_BMI2:BOOL=OFF","GGML_NATIVE:BOOL=OFF")) {
             if (-not $cache.Contains($need)) { throw "CUDA SIMD baseline NOT applied: missing '$need'. E5640 would crash 0xc000001d." }
           }
-          Write-Host "CUDA SIMD baseline OK: SSE4.2 only (E5640-safe), sm_61 GPU path unaffected."
+          if (-not $cache.Contains("CMAKE_BUILD_TYPE:STRING=Release")) { throw "CUDA build type is not Release - would ship a slow Debug binary." }
+          Write-Host "CUDA SIMD baseline OK: SSE4.2 only (E5640-safe), sm_61 GPU path unaffected. CUDA build type: Release."
           # GitHub 免费 windows runner 仅 7GB RAM；fattn 的 FP8/量化模板单实例
           # 可超 1GB，--parallel 8 会 OOM 导致 "subcommand failed" 且无明确 error。
           # 降到 2 并行（约等于 runner 核数），牺牲编译时间换稳定。
